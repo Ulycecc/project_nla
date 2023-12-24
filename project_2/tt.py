@@ -2,8 +2,10 @@ import argparse
 import itertools
 import math
 import textwrap
+import time
 from pathlib import Path
 
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -16,7 +18,7 @@ def parse_args(args=None):
     parser.add_argument(
         "--data-path",
         type=str,
-        default="./data/BOE-XUDLNKG.csv",
+        default="./BOE-XUDLNKG.csv",
         help="Paht to data file",
     )
     parser.add_argument(
@@ -47,6 +49,11 @@ def parse_args(args=None):
         default=["Value"],
         help="Columns to use in dataframe for time series",
     )
+    parser.add_argument(
+        "--is-random",
+        action="store_true",
+        help="Random permutation",
+    )
 
     args = parser.parse_args(args)
 
@@ -61,13 +68,15 @@ def reconstruct(A, G, axes=([-1], [0])):
 
         A_hat = np.tensordot(A_hat, c, axes=axes)
 
-    err = sla.norm((A - A_hat).ravel()) / sla.norm(A.ravel())
+    err = sla.norm((A - A_hat).ravel())
     compression_rate = int(A.size / sum(g.size for g in G))
 
     return A_hat, err, compression_rate
 
 
 def svd(A, eps=0.05, ax=None):
+    start = time.monotonic()
+
     U, s, Vh = sla.svd(A, full_matrices=False)
     A_norm = sla.norm(A.ravel())
     eps_A = eps * A_norm
@@ -85,44 +94,45 @@ def svd(A, eps=0.05, ax=None):
         else:
             break
 
+    elapsed = time.monotonic() - start
+
     i = 0
     C = A
     if ax is not None:
         ax.plot(
             s,
-            label=f"$C_{i}$ {C.shape[0]}x{C.shape[1]}: {s.shape[0]} singular values",
+            label=f"$C_{i}$ {C.shape[0]}x{C.shape[1]}",
         )
         ax.set_yscale("log")
-        ax.set_title(f"singular values SVD ({A.shape})")
+        ax.set_title(f"s.v. SVD ({A.shape})")
         ax.grid(ls="--")
         ax.legend()
 
     G = [U[:, :rk], s[:rk], Vh[:rk]]
     A_hat, err, compression_rate = reconstruct(A, G)
-    assert err < eps_A, f"Not enough precision ({err}). Increase the number of singluar values!"
+    err /= A_norm
+    assert err < eps, f"Not enough precision ({err}). Increase the number of singluar values!"
 
-    return A_hat, G, err, compression_rate
+    return A_hat, G, err, compression_rate, elapsed
 
 
 def hosvd(A, eps=0.05, ax=None):
+    start = time.monotonic()
     d = A.ndim
     A_norm = sla.norm(A.ravel())
     eps_A = eps * A_norm
+    delta = eps_A / math.sqrt(d - 1)
 
+    rk = 1
     while True:
-        rk = 1
         G = []
+        ss = []
         for i, nk in enumerate(A.shape):
             perm = list(range(d))
             perm[0], perm[i] = i, 0
             C = A.transpose(perm).reshape(nk, -1)
             U, s, _, = sla.svd(C, full_matrices=False)
-            if ax is not None:
-                ax.plot(
-                    s,
-                    label=f"$C_{i}$ {C.shape[0]}x{C.shape[1]}: {s.shape[0]} singular values",
-                )
-                ax.set_yscale("log")
+            ss.append((s, C))
 
             G.append(U[:, :rk])
 
@@ -134,7 +144,7 @@ def hosvd(A, eps=0.05, ax=None):
 
         A_hat, err, compression_rate = reconstruct(A, G, axes=([0], [1]))
 
-        if err >= eps_A:
+        if err >= delta:
             rk += 1
             print(
                 f"Not enough precision for HOSVD {err}."
@@ -143,15 +153,26 @@ def hosvd(A, eps=0.05, ax=None):
         else:
             break
 
+    elapsed = time.monotonic() - start
+
     if ax is not None:
-        ax.set_title(f"singular values HOSVD ({A.shape})")
+        for i, (s, C) in enumerate(ss):
+            ax.plot(
+                s,
+                label=f"$C_{i}$ {C.shape[0]}x{C.shape[1]}",
+            )
+            ax.set_yscale("log")
+
+    if ax is not None:
+        ax.set_title(f"s.v. HOSVD ({A.shape})")
         ax.grid(ls="--")
         ax.legend()
 
     A_hat, err, compression_rate = reconstruct(A, G, axes=([0], [1]))
-    assert err < eps_A, f"Not enough precision ({err}). Increase the number of singluar values!"
+    err /= A_norm
+    assert err < eps, f"Not enough precision ({err}). Increase the number of singluar values!"
 
-    return A_hat, G, err, compression_rate
+    return A_hat, G, err, compression_rate, elapsed
 
 
 def tt_svd(A, eps=0.05, ax=None):
@@ -160,6 +181,7 @@ def tt_svd(A, eps=0.05, ax=None):
     Algorithm 1: TT-svd
     """
 
+    start = time.monotonic()
     d = A.ndim
     A_norm = sla.norm(A.ravel())
     eps_A = eps * A_norm
@@ -176,7 +198,7 @@ def tt_svd(A, eps=0.05, ax=None):
         if ax is not None:
             ax.plot(
                 s,
-                label=f"$C_{i}$ {C.shape[0]}x{C.shape[1]}: {s.shape[0]} singular values",
+                label=f"$C_{i}$ {C.shape[0]}x{C.shape[1]}: {s.shape[0]}",
             )
             ax.set_yscale("log")
 
@@ -199,23 +221,26 @@ def tt_svd(A, eps=0.05, ax=None):
 
         r0 = rk
 
+    elapsed = time.monotonic() - start
+
     if ax is not None:
-        ax.set_title(f"singular values TT-SVD ({A.shape})")
+        ax.set_title(f"s.v. TT-SVD ({A.shape})")
         ax.grid(ls="--")
         ax.legend()
 
     G.append(C)
 
     A_hat, err, compression_rate = reconstruct(A, G)
-    assert err < eps_A, f"Not enough precision ({err}). Increase the number of singluar values!"
+    err /= A_norm
+    assert err < eps, f"Not enough precision ({err}). Increase the number of singluar values!"
 
-    return A_hat, G, err, compression_rate
+    return A_hat, G, err, compression_rate, elapsed
 
 
 def find_best_factorization(N, d, is_random=False):
     n = int(math.pow(N, 1 / d))
 
-    eps = 2 * int(math.sqrt(n))
+    eps = 10 * int(math.sqrt(n))
     sp = [
         range(max(1, n - eps), min(N + 1, n + eps + 1))
         for _ in range(d - 1)
@@ -238,17 +263,21 @@ def find_best_factorization(N, d, is_random=False):
             N // np.prod(res, axis=1, keepdims=True)
         ],
     )
-    pw = cdist(
-        res,
-        [[n] * d],
-        metric="cityblock",
-    )
-    i, _ = np.unravel_index(pw.argmin(), pw.shape)
-    js = res[i]
-    js = -np.sort(-js)
-
     if is_random:
-        np.random.shuffle(js)
+        i = np.random.randint(0, len(res))
+    else:
+        pw = cdist(
+            res,
+            [[n] * d],
+            metric="cityblock",
+        )
+        i, _ = np.unravel_index(pw.argmin(), pw.shape)
+
+    js = res[i]
+
+    if not is_random:
+        js = -np.sort(-js)
+        #js = np.sort(js)
 
     return js
 
@@ -284,17 +313,14 @@ def find_best(N):
     return N
 
 
-def get_label(method, G, err, cr):
-    label = (
-        f"{method}"
-        f", err:{err:.3} cr:{cr}"
-        f", {','.join('x'.join(map(str, g.shape)) for g in G)}"
-    )
+def get_label(method, G, err, cr, t):
+    r = max(min(g.shape) for g in G)
+    label = f"{method} $\epsilon$:{err:.3f} $c_r$:{cr} $t$:{t:.3} $r$:{r}"
 
     return label
 
 
-def time_series(data_path, usecols, N, tol=0.05):
+def time_series(data_path, usecols, N, tol=0.05, is_random=False):
     x = pd.read_csv(
         data_path,
         usecols=usecols,
@@ -312,39 +338,39 @@ def time_series(data_path, usecols, N, tol=0.05):
         ddd
         '''
     )
-    fig, axes = plt.subplot_mosaic(mosaic, figsize=(12, 8))
-    fig.suptitle(f"Compression for time series x: {len(x)}x1")
+    fig, axes = plt.subplot_mosaic(mosaic, figsize=(12, 6))
+    fig.suptitle(f"Compression for time series x: {len(x)}x1 with tolerance {tol}")
 
     axes["d"].plot(
         x,
         label="$x$",
     )
 
-    n1, n2 = find_best_factorization(N, 2)
+    n1, n2 = find_best_factorization(N, 2, is_random=is_random)
     X = x.reshape(n1, n2)
-    X_svd, G_svd, error_svd, cr_svd = svd(X, eps=tol, ax=axes["a"])
+    X_svd, G_svd, error_svd, cr_svd, t_svd = svd(X, eps=tol, ax=axes["a"])
     x_svd = X_svd.reshape(-1)
     axes["d"].plot(
         x_svd,
-        label=get_label("$x_{svd}$  ", G_svd, error_svd, cr_svd),
+        label=get_label("$x_{svd}$", G_svd, error_svd, cr_svd, t_svd),
     )
 
-    n1, n2, n3 = find_best_factorization(N, 3)
+    n1, n2, n3 = find_best_factorization(N, 3, is_random=is_random)
     X = x.reshape(n1, n2, n3)
-    X_hosvd, G_hosvd, error_hosvd, cr_hosvd = hosvd(X, eps=tol, ax=axes["b"])
+    X_hosvd, G_hosvd, error_hosvd, cr_hosvd, t_hosvd = hosvd(X, eps=tol, ax=axes["b"])
     x_hosvd = X_hosvd.reshape(-1)
     axes["d"].plot(
         x_hosvd,
-        label=get_label("$x_{hosvd}$", G_hosvd, error_hosvd, cr_hosvd),
+        label=get_label("$x_{hosvd}$", G_hosvd, error_hosvd, cr_hosvd, t_hosvd),
     )
 
-    X_tt, G_tt, error_tt, cr_tt = tt_svd(X, eps=tol, ax=axes["c"])
+    X_tt, G_tt, error_tt, cr_tt, t_tt = tt_svd(X, eps=tol, ax=axes["c"])
     x_tt = X_tt.reshape(-1)
 
     ax = axes["d"]
     ax.plot(
         x_tt,
-        label=get_label("$x_{tt}$   ", G_tt, error_tt, cr_tt),
+        label=get_label("$x_{tt}$", G_tt, error_tt, cr_tt, t_tt),
     )
     ax.set_title("Blessing of dimensionality of time series")
     ax.legend()
@@ -353,13 +379,89 @@ def time_series(data_path, usecols, N, tol=0.05):
     fig.text(
         0.5,
         0.005,
-        "err=${\|x - \hat{x}\|}_F$, cr=compression rate",
+        "$\epsilon$ - ${\|x - \hat{x}\|}_F$, $c_r$ - compression rate, $t$ - time $r$ - rank",
         ha="center",
     )
     fig.tight_layout()
 
     data_path = Path(data_path)
-    fig.savefig(f"{data_path.stem}_comp.png")
+    out_path = f"{data_path.stem}_comp.png"
+    if is_random:
+        out_path = f"{data_path.stem}_comp_r.png"
+
+    fig.savefig(out_path)
+    plt.show()
+    plt.close(fig)
+
+
+def image(data_path, tol=0.05, is_random=False):
+    x = cv2.imread(data_path)
+    m, n, c = x.shape
+    x = x.ravel()
+    N = len(x)
+
+    mosaic = textwrap.dedent(
+        '''
+        .abc
+        defg
+        '''
+    )
+    fig, axes = plt.subplot_mosaic(mosaic, figsize=(12, 6))
+    fig.suptitle(f"Compression for image x: {m}x{n}x{c} with tolerance {tol}")
+
+    ax = axes["d"]
+    ax.set_title("Original image")
+    ax.imshow(
+        x.reshape(m, n, c),
+    )
+    ax.axis("off")
+
+    n1, n2 = find_best_factorization(N, 2, is_random=is_random)
+    X = x.reshape(n1, n2)
+    X_svd, G_svd, error_svd, cr_svd, t_svd = svd(X, eps=tol, ax=axes["a"])
+    x_svd = X_svd.reshape(-1)
+    ax = axes["e"]
+    ax.set_title(get_label("$x_{svd}$", G_svd, error_svd, cr_svd, t_svd))
+    ax.imshow(
+        x_svd.reshape(m, n, c).astype("uint8"),
+    )
+    ax.axis("off")
+
+    n1, n2, n3 = find_best_factorization(N, 3, is_random=is_random)
+    X = x.reshape(n1, n2, n3)
+    X_hosvd, G_hosvd, error_hosvd, cr_hosvd, t_hosvd = hosvd(X, eps=tol, ax=axes["b"])
+    x_hosvd = X_hosvd.reshape(-1)
+    ax = axes["f"]
+    ax.set_title(get_label("$x_{hosvd}$", G_hosvd, error_hosvd, cr_hosvd, t_hosvd))
+    ax.imshow(
+        x_hosvd.reshape(m, n, c).astype("uint8"),
+    )
+    ax.axis("off")
+
+    X_tt, G_tt, error_tt, cr_tt, t_tt = tt_svd(X, eps=tol, ax=axes["c"])
+    x_tt = X_tt.reshape(-1)
+
+    ax = axes["g"]
+    ax.set_title(get_label("$x_{tt}$", G_tt, error_tt, cr_tt, t_tt))
+    ax.imshow(
+        x_tt.reshape(m, n, c).astype("uint8"),
+    )
+    ax.axis("off")
+
+    fig.text(
+        0.5,
+        0.005,
+        "$\epsilon$ - ${\|x - \hat{x}\|}_F$, $c_r$ - compression rate, $t$ - time $r$ - rank",
+        ha="center",
+    )
+    fig.tight_layout()
+
+    data_path = Path(data_path)
+    out_path = f"{data_path.stem}_comp.png"
+    if is_random:
+        out_path = f"{data_path.stem}_comp_r.png"
+
+    fig.savefig(out_path)
     plt.show()
     plt.close(fig)
 
@@ -372,6 +474,13 @@ def main():
             usecols=args.usecols,
             N=args.n_samples,
             tol=args.tol,
+            is_random=args.is_random,
+        )
+    elif args.dim == 2:
+        image(
+            data_path=args.data_path,
+            tol=args.tol,
+            is_random=args.is_random,
         )
 
 
