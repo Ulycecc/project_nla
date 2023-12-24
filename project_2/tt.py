@@ -55,6 +55,12 @@ def parse_args(args=None):
         help="Random permutation",
     )
 
+    parser.add_argument(
+        "--use-img-dim",
+        action="store_true",
+        help="Use image dimensions",
+    )
+
     args = parser.parse_args(args)
 
     return args
@@ -123,18 +129,26 @@ def hosvd(A, eps=0.05, ax=None):
     eps_A = eps * A_norm
     delta = eps_A / math.sqrt(d - 1)
 
+    Us = []
+    for i, nk in enumerate(A.shape):
+        perm = list(range(d))
+        perm[0], perm[i] = i, 0
+        C = A.transpose(perm).reshape(nk, -1)
+        U, s, _, = sla.svd(C, full_matrices=False)
+        if ax is not None:
+            ax.plot(
+                s,
+                label=f"$C_{i}$ {C.shape[0]}x{C.shape[1]}",
+            )
+            ax.set_yscale("log")
+        Us.append(U)
+
     rk = 1
     while True:
-        G = []
-        ss = []
-        for i, nk in enumerate(A.shape):
-            perm = list(range(d))
-            perm[0], perm[i] = i, 0
-            C = A.transpose(perm).reshape(nk, -1)
-            U, s, _, = sla.svd(C, full_matrices=False)
-            ss.append((s, C))
-
-            G.append(U[:, :rk])
+        G = [
+            U[:, :rk]
+            for U in Us
+        ]
 
         core = A
         for c in G:
@@ -154,14 +168,6 @@ def hosvd(A, eps=0.05, ax=None):
             break
 
     elapsed = time.monotonic() - start
-
-    if ax is not None:
-        for i, (s, C) in enumerate(ss):
-            ax.plot(
-                s,
-                label=f"$C_{i}$ {C.shape[0]}x{C.shape[1]}",
-            )
-            ax.set_yscale("log")
 
     if ax is not None:
         ax.set_title(f"s.v. HOSVD ({A.shape})")
@@ -394,7 +400,7 @@ def time_series(data_path, usecols, N, tol=0.05, is_random=False):
     plt.close(fig)
 
 
-def image(data_path, tol=0.05, is_random=False):
+def image(data_path, tol=0.05, is_random=False, use_img_dim=False):
     x = cv2.imread(data_path)
     m, n, c = x.shape
     x = x.ravel()
@@ -416,7 +422,11 @@ def image(data_path, tol=0.05, is_random=False):
     )
     ax.axis("off")
 
-    n1, n2 = find_best_factorization(N, 2, is_random=is_random)
+    if use_img_dim:
+        n1, n2 = m, n * c
+    else:
+        n1, n2 = find_best_factorization(N, 2, is_random=is_random)
+
     X = x.reshape(n1, n2)
     X_svd, G_svd, error_svd, cr_svd, t_svd = svd(X, eps=tol, ax=axes["a"])
     x_svd = X_svd.reshape(-1)
@@ -427,7 +437,10 @@ def image(data_path, tol=0.05, is_random=False):
     )
     ax.axis("off")
 
-    n1, n2, n3 = find_best_factorization(N, 3, is_random=is_random)
+    if use_img_dim:
+        n1, n2, n3 = m, n, c
+    else:
+        n1, n2, n3 = find_best_factorization(N, 3, is_random=is_random)
     X = x.reshape(n1, n2, n3)
     X_hosvd, G_hosvd, error_hosvd, cr_hosvd, t_hosvd = hosvd(X, eps=tol, ax=axes["b"])
     x_hosvd = X_hosvd.reshape(-1)
@@ -461,6 +474,9 @@ def image(data_path, tol=0.05, is_random=False):
     if is_random:
         out_path = f"{data_path.stem}_comp_r.png"
 
+    if use_img_dim:
+        out_path = f"{data_path.stem}_comp_i.png"
+
     fig.savefig(out_path)
     plt.show()
     plt.close(fig)
@@ -481,6 +497,7 @@ def main():
             data_path=args.data_path,
             tol=args.tol,
             is_random=args.is_random,
+            use_img_dim=args.use_img_dim,
         )
 
 
